@@ -102,7 +102,7 @@ export class StudentController {
   }
 
   @UseGuards(AuthGuard)
-  @Post('update/:id')
+  @Patch('update/:id')
   async update(
     @Param('id') id: string, 
     @Body() updateStudentDto: UpdateStudentDto,
