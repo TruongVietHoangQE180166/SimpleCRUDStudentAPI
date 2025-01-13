@@ -1,16 +1,14 @@
 import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config'; // Import ConfigModule
-import { MongooseModule } from '@nestjs/mongoose';
+import { ConfigModule } from '@nestjs/config';
 import { StudentModule } from './student/student.module';
+import { Databaseconfig} from './config/database.config'; // Import DatabaseModule
 
 @Module({
   imports: [
     ConfigModule.forRoot({
-      isGlobal: true, // Để ConfigModule có thể sử dụng ở mọi nơi trong ứng dụng
+      isGlobal: true, 
     }),
-    MongooseModule.forRoot('mongodb://localhost:27017/student-management', {
-      autoIndex: true, // Tự động tạo index
-    }),
+    Databaseconfig, 
     StudentModule,
   ],
   controllers: [],

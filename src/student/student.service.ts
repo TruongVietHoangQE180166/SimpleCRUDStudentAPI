@@ -44,8 +44,12 @@ export class StudentService {
 
     // Create new student
     const studentData = {
-      ...createStudentDto,
-      password: hashedPassword
+      email: createStudentDto.email,
+      password: hashedPassword,
+      repassword: createStudentDto.repassword,
+      name: createStudentDto.name,
+      birthday: createStudentDto.birthday,
+      id: createStudentDto.id,
     };
     delete studentData.repassword;
 
