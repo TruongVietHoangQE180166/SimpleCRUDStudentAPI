@@ -1,105 +1,184 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
-import { Student } from './interface/student.interface';
+import { Injectable, NotFoundException, BadRequestException, UnauthorizedException } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { Student } from './student.schema';
 import { CreateStudentDto } from './dto/reate-student.dto';
 import { UpdateStudentDto } from './dto/update-student.dto';
+import { LoginDto } from './dto/login.dto';
+import * as bcrypt from 'bcrypt';
+import * as jwt from 'jsonwebtoken';
 
 @Injectable()
 export class StudentService {
-  private students: Student[] = [
-    { id: 1, email: 'john.doe@example.com', name: 'John Doe', age: 20 },
-    { id: 2, email: 'jane.smith@example.com', name: 'Jane Smith', age: 22 },
-    { id: 3, email: 'alice.wonderland@example.com', name: 'Alice Wonderland', age: 21 },
-  ];
-  private idCounter = 4; 
+  constructor(
+    @InjectModel(Student.name) private studentModel: Model<Student>
+  ) {}
 
-  create(createStudentDto: CreateStudentDto): Student {
-    const existingStudent1 = this.students.find(
-      (student) => student.email === createStudentDto.email,
-    );
-    
+  
+  async register(createStudentDto: CreateStudentDto): Promise<Omit<Student, 'password'>> {
+    // Validate password match
+    if (createStudentDto.password !== createStudentDto.repassword) {
+      throw new BadRequestException('Passwords do not match');
+    }
 
-    if (existingStudent1) {
+    // Check existing email
+    const existingStudentEmail = await this.studentModel.findOne({ 
+      email: createStudentDto.email 
+    });
+
+    if (existingStudentEmail) {
       throw new BadRequestException('Student with this email already exists');
     }
-    
-    const existingStudent = this.students.find(
-      (student) => student.id === createStudentDto.id,
-    );
 
-    if (existingStudent) {
+   
+    const existingStudentId = await this.studentModel.findOne({ 
+      id: createStudentDto.id 
+    });
+    
+    if (existingStudentId) {
       throw new BadRequestException('Student with this ID already exists');
     }
 
+    // Hash password
+    const hashedPassword = await bcrypt.hash(createStudentDto.password, 10);
 
-    const newStudent: Student = {
-      id: this.idCounter++,
+    // Create new student
+    const studentData = {
       ...createStudentDto,
+      password: hashedPassword
     };
+    delete studentData.repassword;
 
-    this.students.push(newStudent);
-    return newStudent;
+    const newStudent = new this.studentModel(studentData);
+    const savedStudent = await newStudent.save();
+    
+    // Remove password from response
+    const response = savedStudent.toObject();
+    delete response.password;
+    return response;
   }
 
-  findAll(page: number, limit: number): { data: Student[]; total: number } {
+  
+  async login(loginDto: LoginDto): Promise<{ token: string }> {
+    const student = await this.studentModel.findOne({ email: loginDto.email });
+    
+    if (!student) {
+      throw new UnauthorizedException('Invalid credentials');
+    }
+
+    const isPasswordValid = await bcrypt.compare(loginDto.password, student.password);
+    
+    if (!isPasswordValid) {
+      throw new UnauthorizedException('Invalid credentials');
+    }
+
+    // Generate JWT token
+    const token = jwt.sign(
+      { id: student.id, email: student.email },
+      process.env.JWT_SECRET,
+      { expiresIn: '24h' }
+    );
+
+    return { token };
+  }
+
+  
+  async update(
+    studentId: number, 
+    updateStudentDto: UpdateStudentDto, 
+    currentUserId: number
+  ): Promise<Student> {
+    // Check if user is updating their own profile
+    if (studentId !== currentUserId) {
+      throw new UnauthorizedException('You can only update your own profile');
+    }
+
+    const student = await this.studentModel.findOne({ id: studentId });
+
+    if (!student) {
+      throw new NotFoundException(`Student with ID ${studentId} not found`);
+    }
+
+    // Check for email uniqueness if email is being updated
+    if (updateStudentDto.email) {
+      const existingStudent = await this.studentModel.findOne({
+        email: updateStudentDto.email,
+        id: { $ne: studentId }
+      });
+
+      if (existingStudent) {
+        throw new BadRequestException('Student with this email already exists');
+      }
+    }
+
+    // Hash password if it's being updated
+    if (updateStudentDto.password) {
+      if (updateStudentDto.password !== updateStudentDto.repassword) {
+        throw new BadRequestException('Passwords do not match');
+      }
+      updateStudentDto.password = await bcrypt.hash(updateStudentDto.password, 10);
+      delete updateStudentDto.repassword;
+    }
+
+    return await this.studentModel
+      .findOneAndUpdate(
+        { id: studentId }, 
+        updateStudentDto,
+        { new: true }
+      )
+      .exec();
+  }
+
+  
+  async remove(studentId: number, currentUserId: number): Promise<void> {
+    if (studentId !== currentUserId) {
+      throw new UnauthorizedException('You can only delete your own account');
+    }
+
+    const result = await this.studentModel.deleteOne({ id: studentId }).exec();
+
+    if (result.deletedCount === 0) {
+      throw new NotFoundException(`Student with ID ${studentId} not found`);
+    }
+  }
+
+  
+  async findAll(page: number, limit: number): Promise<{ data: Student[]; total: number }> {
     if (!Number.isInteger(page) || page < 1) {
-      throw new Error('Page must be a positive integer.');
+      throw new BadRequestException('Page must be a positive integer');
     }
     if (!Number.isInteger(limit) || limit < 1) {
-      throw new Error('Limit must be a positive integer.');
+      throw new BadRequestException('Limit must be a positive integer');
     }
-  
-    const start = (page - 1) * limit;
-    const end = start + limit;
-  
-    return {
-      data: this.students.slice(start, end),
-      total: this.students.length,
-    };
-  }
-  
 
-  findOne(id: number): Student {
+    const skip = (page - 1) * limit;
+
+    const [data, total] = await Promise.all([
+      this.studentModel.find()
+        .select('-password') // Exclude password from response
+        .skip(skip)
+        .limit(limit)
+        .exec(),
+      this.studentModel.countDocuments()
+    ]);
+
+    return { data, total };
+  }
+
+  async findOne(id: number): Promise<Omit<Student, 'password'>> {
     if (!Number.isInteger(id) || id < 1) {
-      throw new Error('ID must be a positive integer.');
+      throw new BadRequestException('ID must be a positive integer');
     }
-    const student = this.students.find((s) => s.id === id);
+
+    const student = await this.studentModel
+      .findOne({ id })
+      .select('-password') // Exclude password from response
+      .exec();
+
     if (!student) {
-      throw new Error(`Student with ID ${id} not found.`);
-    }
-    return student;
-  }
-
-  update(id: number, updateStudentDto: UpdateStudentDto): Student {
-    
-    const student = this.students.find((student) => student.id === id);
-    if (!student) {
-      throw new BadRequestException(`Student with ID ${id} does not exist`);
-    }
-  
-    
-    if (
-      updateStudentDto.email &&
-      this.students.some(
-        (s) => s.email === updateStudentDto.email && s.id !== id, 
-      )
-    ) {
-      throw new BadRequestException('Student with this email already exists');
-    }
-  
-    
-    Object.assign(student, updateStudentDto);
-  
-    return student;
-  }
-  
-
-  remove(id: number): void {
-    const index = this.students.findIndex((student) => student.id === id);
-
-    if (index === -1) {
       throw new NotFoundException(`Student with ID ${id} not found`);
     }
 
-    this.students.splice(index, 1);
+    return student;
   }
 }
